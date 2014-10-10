@@ -21,3 +21,4 @@ RUN make -e download
 #
 # -j8 means to use 8 parallel processes.
 RUN make -e -j8 all
+RUN make -e -j4 build_assoc
