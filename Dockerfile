@@ -11,7 +11,7 @@ ADD Makefile /src/conceptnet/Makefile
 # Set up ConceptNet
 WORKDIR /src/conceptnet
 RUN python3 setup.py develop
-RUN pip3 install assoc_space==1.0b
+RUN pip3 install assoc_space==1.0.0
 
 # Download 1 GB of input data
 RUN make -e download
