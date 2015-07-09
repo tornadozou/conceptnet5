@@ -1,21 +1,8 @@
 import numpy as np
 from scipy import sparse
 
-from ftfy import fix_text
-
 from sklearn.preprocessing import normalize
 
-from assoc_space import AssocSpace, LabelSet
-from assoc_space.eigenmath import normalize_rows
-
-from conceptnet5.nodes import standardized_concept_uri
-from conceptnet5.util import get_data_filename
-# FIXME: negate_concept should live somewhere nicer
-from conceptnet5.builders.assoc_to_vector_space import negate_concept
-from conceptnet5.builders.glove import load_glove_vectors
-
-from collections import defaultdict
-import pathlib
 
 class SparseMatrixBuilder:
     """
@@ -83,8 +70,6 @@ def retrofit(vectors, sparse_matrix, labels,
     # length of glove vectors
     vec_len = len(vectors[0])
     orig_vecs = np.copy(vectors)
-
-    previous_diff = 0
 
     if verbose:
         print("Retrofitting")
