@@ -25,8 +25,8 @@ class SparseMatrixBuilder:
         return sparse.csr_matrix((self.values, (self.rowIndex, self.colIndex)),
                                 shape=shape, dtype=dtype)
 
-def load_conceptnet(filename, labels, verbose=True,
-                        offset=1e-9):
+
+def load_conceptnet(filename, labels, verbose=True, offset=1e-9):
     """
     Generates a sparse association matrix from a conceptnet5 csv file.
     """
@@ -56,7 +56,7 @@ def load_conceptnet(filename, labels, verbose=True,
 
 
 def retrofit(vectors, sparse_matrix, labels,
-        iterations=10, verbose=True, normalize_intermediate=False):
+             iterations=10, verbose=True, normalize_intermediate=False):
     """
     Updates the word vectors contained in `dense_file` using the association
     contained in `sparse_file` and writes the new vectors to `output_file`.
