@@ -1,7 +1,8 @@
 import numpy as np
 from scipy import sparse
-
+from collections import defaultdict
 from sklearn.preprocessing import normalize
+from conceptnet5.builders.assoc_to_vector_space import negate_concept
 
 
 class SparseMatrixBuilder:
@@ -37,6 +38,8 @@ def load_conceptnet(filename, labels, verbose=True, offset=1e-9):
         print("Loading sparse associations")
 
     # Add pairwise associations
+    totals = defaultdict(float)
+
     with open(filename, encoding='utf-8') as infile:
         for line in infile:
             line = line.rstrip()
@@ -46,8 +49,21 @@ def load_conceptnet(filename, labels, verbose=True, offset=1e-9):
                 index2 = labels.add(concept2)
                 value = float(value_str)
 
+                totals[concept1] += value
+                totals[concept2] += value
                 mat[index1, index2] = value
                 mat[index2, index1] = value
+
+    if verbose:
+        print("Creating self-loops")
+
+    for index1, concept in enumerate(labels):
+        mat[index1, index1] = totals[concept] + 10
+        neg = negate_concept(concept)
+        if neg in labels:
+            index2 = labels.index(neg)
+            mat[index1, index2] = -0.5
+            mat[index2, index1] = -0.5
 
     if verbose:
         print("Building sparse matrix")
@@ -55,8 +71,8 @@ def load_conceptnet(filename, labels, verbose=True, offset=1e-9):
     return mat.tocsr(shape=(len(labels), len(labels)))
 
 
-def retrofit(vectors, sparse_matrix, labels,
-             iterations=10, verbose=True, normalize_intermediate=False):
+def retrofit(vectors, sparse_matrix, labels, orig_weight=1,
+             iterations=20, verbose=True, normalize_intermediate=False):
     """
     Updates the word vectors contained in `dense_file` using the association
     contained in `sparse_file` and writes the new vectors to `output_file`.
@@ -66,9 +82,6 @@ def retrofit(vectors, sparse_matrix, labels,
     A larger `offset` causes vectors with small magnitudes to be normalized
     into vectors with magnitudes less than 1.
     """
-
-    # length of glove vectors
-    vec_len = len(vectors[0])
     orig_vecs = np.copy(vectors)
 
     if verbose:
@@ -76,16 +89,16 @@ def retrofit(vectors, sparse_matrix, labels,
 
     for iter in range(iterations):
         if verbose:
-            print("%d/10" % (iter + 1))
+            print("%d/%d" % (iter + 1, iterations))
 
         vectors = sparse_matrix.dot(vectors)
 
-        vectors += orig_vecs
-        vectors /= 2
-
         if normalize_intermediate:
-            print("%s normalizing intermediate"%normalize_intermediate)
-            normalize(vectors, norm=normalize_intermediate, axis=0, copy=False)
+            print("%s normalizing intermediate" % normalize_intermediate)
+            normalize(vectors, norm=normalize_intermediate, axis=1, copy=False)
+
+        vectors += orig_vecs * orig_weight
+        vectors /= (1 + orig_weight)
 
         if verbose:
             print("Average diff: %s" % np.mean(np.abs(vectors - orig_vecs)))
