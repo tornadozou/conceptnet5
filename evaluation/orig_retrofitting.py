@@ -6,6 +6,7 @@ from collections import defaultdict
 from conceptnet5.builders.assoc_to_vector_space import negate_concept
 from sklearn.preprocessing import normalize
 import numpy as np
+import wordsim
 import pickle
 from scipy import sparse
 
@@ -36,22 +37,12 @@ def make_sparse_assoc(filename, labels):
             totals[concept1] += value
             totals[concept2] += value
 
-    print("Adding self-loops and negations")
+    print("Adding self-loops")
     for concept in labels:
         index1 = labels.index(concept)
         rows.append(index1)
         cols.append(index1)
-        values.append(totals[concept] + 10)
-
-        neg = negate_concept(concept)
-        if neg in labels:
-            index2 = labels.index(neg)
-            rows.append(index1)
-            cols.append(index2)
-            values.append(-0.5)
-            rows.append(index2)
-            cols.append(index1)
-            values.append(-0.5)
+        values.append(totals[concept])
 
     print("Building sparse matrix")
     sparse_csr = sparse.coo_matrix((values, (rows, cols))).tocsr()
@@ -63,6 +54,7 @@ def retrofit(dense_file, sparse_file, label_file, output_file):
     labels = LabelSet(pdata)
     vectors = np.load(dense_file)
     sparse_csr = make_sparse_assoc(sparse_file, labels)
+    normalize(sparse_csr, norm='l1', copy=False)
     dense = np.zeros((len(labels), 300))
     print("Building dense matrix")
     for i in range(len(vectors)):
@@ -73,13 +65,8 @@ def retrofit(dense_file, sparse_file, label_file, output_file):
     orig_dense = normalize_rows(dense, offset=1e-9)
     for iter in range(10):
         print("%d/10" % (iter + 1))
-        product = sparse_csr.dot(dense)
-        # mean = np.mean(product, axis=0)
-        # product -= mean
-
-        newdense = normalize_rows(product, offset=1e-9)
-        del product
-
+        newdense = sparse_csr.dot(dense)
+        normalize(newdense, norm='l2', copy=False)
         newdense[:len(vectors)] += orig_dense[:len(vectors)]
         newdense[:len(vectors)] /= 2
         diff = np.mean(np.abs(newdense - dense))
@@ -88,6 +75,7 @@ def retrofit(dense_file, sparse_file, label_file, output_file):
 
     assoc = AssocSpace(dense, np.ones(300), labels, assoc=dense)
     assoc.save_dir(output_file)
+    wordsim.test(assoc, standardize=True)
 
 
 def main():

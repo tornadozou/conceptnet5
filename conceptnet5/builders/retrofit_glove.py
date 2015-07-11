@@ -59,11 +59,6 @@ def load_conceptnet(filename, labels, verbose=True, offset=1e-9):
 
     for index1, concept in enumerate(labels):
         mat[index1, index1] = totals[concept] + 10
-        neg = negate_concept(concept)
-        if neg in labels:
-            index2 = labels.index(neg)
-            mat[index1, index2] = -0.5
-            mat[index2, index1] = -0.5
 
     if verbose:
         print("Building sparse matrix")
