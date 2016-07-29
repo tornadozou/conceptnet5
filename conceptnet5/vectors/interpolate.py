@@ -4,7 +4,8 @@ import numpy as np
 import wordfreq
 from conceptnet5.uri import split_uri
 from ..vectors import similar_to_vec, weighted_average
-from .transforms import l2_normalize_rows
+from .transforms import l2_normalize_rows, l1_normalize_columns
+from .formats import save_hdf
 
 
 WORDFREQ_LANGUAGES = set(wordfreq.available_languages())
@@ -31,6 +32,42 @@ def dataframe_svd_projection(frame, k):
     uframe = pd.DataFrame(projected[:, :k], index=frame.index, dtype='f')
     vframe = pd.DataFrame(projection[:, :k], index=frame.columns, dtype='f')
     return uframe, vframe
+
+
+def dataframe_svd_with_missing_values(frame, k, iters=10):
+    approx_values = pd.DataFrame(np.zeros(frame.shape, dtype='f'), index=frame.index)
+    U = Σ = Vt = None
+    for i in range(iters):
+        print("Filling missing values: Iteration %d of %d" % ((i + 1), iters))
+        values = frame.fillna(approx_values).values
+        U, Σ, Vt = np.linalg.svd(values, full_matrices=False)
+        U = U[:, :k]
+        Σ = Σ[:k]
+        Vt = Vt[:k]
+        approx_values = pd.DataFrame((U * Σ).dot(Vt), index=frame.index)
+        sqdiff = float(((approx_values - frame) ** 2).sum().sum())
+        print("  RMS difference: %6.6f" % (sqdiff ** 0.5))
+        save_hdf(approx_values, '/tmp/dataframe_svd.h5')
+    projected = U * Σ ** .5
+    projection = Vt.T * Σ ** .5
+    uframe = pd.DataFrame(projected, index=frame.index, dtype='f')
+    vframe = pd.DataFrame(projection, index=frame.columns, dtype='f')
+    return uframe, vframe
+
+
+def align_frames(frames):
+    shared_vocab = frames[0].index
+    for frame in frames[1:]:
+        shared_vocab |= frame.index
+
+    offsets = [0]
+    for frame in frames:
+        offsets.append(offsets[-1] + frame.shape[1])
+    shared_vecs = pd.DataFrame(index=shared_vocab, columns=range(offsets[-1]), dtype='f')
+
+    for i, frame in enumerate(frames):
+        shared_vecs.loc[frame.index, offsets[i]:offsets[i + 1]] = frame.rename(columns=lambda x: x + offsets[i])
+    return l1_normalize_columns(shared_vecs)
 
 
 def estimate_frequency(term, frame1, frame2, extra_labels):

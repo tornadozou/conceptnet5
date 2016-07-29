@@ -2,7 +2,7 @@ import click
 from .formats import convert_glove, convert_word2vec, load_hdf, save_hdf
 from .sparse_matrix_builder import build_from_conceptnet_table
 from .retrofit import sharded_retrofit, join_shards
-from .interpolate import merge_interpolate
+from .interpolate import merge_interpolate, align_frames, dataframe_svd_with_missing_values
 from .evaluation.wordsim import evaluate
 from .transforms import shrink_and_sort
 
@@ -32,6 +32,20 @@ def run_retrofit(dense_hdf_filename, conceptnet_filename, output_filename,
 @click.option('--nshards', '-s', default=6)
 def run_join_retrofit(filename, nshards=6):
     join_shards(filename, nshards)
+
+
+@cli.command(name='svdmerge')
+@click.argument('filenames', nargs=-1, type=click.Path(readable=True, dir_okay=False))
+@click.option('--output-u', '-u', type=click.Path(writable=True, dir_okay=False))
+@click.option('--output-v', '-v', type=click.Path(writable=True, dir_okay=False))
+@click.option('--axes', '-a', default=300)
+def combine_with_svd(filenames, output_u, output_v, axes=300, iters=10):
+    frames = [load_hdf(filename) for filename in filenames]
+    bigframe = align_frames(frames)
+    del frames
+    uframe, vframe = dataframe_svd_with_missing_values(bigframe, k=axes)
+    save_hdf(uframe, output_u)
+    save_hdf(vframe, output_v)
 
 
 @cli.command(name='convert_glove')
