@@ -1,19 +1,25 @@
 import pandas as pd
 import numpy as np
-import wordfreq
+
 from ..vectors import standardized_uri, similar_to_vec
-from conceptnet5.uri import uri_prefix, split_uri
+from conceptnet5.uri import uri_prefix
 from conceptnet5.language.lemmatize import lemmatize_uri
-from conceptnet5.languages import CORE_LANGUAGES
 
 
 def standardize_row_labels(frame, language='en', forms=True):
     """
-    Convert a frame whose row labels are bare English terms to one whose row
-    labels are standardized ConceptNet URIs (with some extra word2vec-style
-    normalization of digits). Rows whose labels get the same
-    standardized URI get combined, with earlier rows given more weight.
+    Convert a frame whose row labels are bare English terms (e.g. of the
+    form 'en/term') to one whose row labels are standardized ConceptNet URIs
+    (e.g. of the form '/c/en/term'; and with some extra word2vec-style
+    normalization of digits). Rows whose labels get the same standardized
+    URI get combined, with earlier rows given more weight.
     """
+    # Check for en/term format we use to train fastText on OpenSubtitles data
+    if all(label.count('/') == 1 for label in frame.index[10:20]):
+        tuples = [label.partition('/') for label in frame.index]
+        frame.index = [uri_prefix(standardized_uri(language, text))
+                       for language, _slash, text in tuples]
+
     # Re-label the DataFrame with standardized, non-unique row labels
     frame.index = [uri_prefix(standardized_uri(language, label)) for label in frame.index]
 
@@ -38,7 +44,7 @@ def standardize_row_labels(frame, language='en', forms=True):
 
     # Rearrange the items in descending order of weight, similar to the order
     # we get them in from word2vec and GloVe
-    combined_weights.sort(ascending=False)
+    combined_weights.sort_values(inplace=True, ascending=False)
     result = scaled.loc[combined_weights.index]
     return result
 
@@ -67,49 +73,22 @@ def l2_normalize_rows(frame, offset=0.):
     return frame.div(row_norms, axis='rows')
 
 
+def subtract_mean_vector(frame):
+    """
+    Re-center the vectors in a DataFrame by subtracting the mean vector from
+    each row.
+    """
+    return frame.sub(frame.mean(axis='rows'), axis='columns')
+
+
 def shrink_and_sort(frame, n, k):
     """
-    Truncate a matrix to NxK, re-normalize it, and arrange the rows in
+    Truncate a DataFrame to NxK, re-normalize it, and arrange the rows in
     lexicographic order for querying.
     """
     shrunk = l2_normalize_rows(frame.iloc[:n, :k])
     shrunk.sort_index(inplace=True)
     return shrunk
-
-
-def term_freq(term):
-    _c, lang, term = split_uri(term)[:3]
-    if lang == 'en':
-        return wordfreq.word_frequency(term, 'en', 'large')
-    elif lang in CORE_LANGUAGES:
-        return wordfreq.word_frequency(term, lang)
-    else:
-        return 0.
-
-
-def miniaturize(frame, prefix='/c/', other_vocab=None, k=256):
-    """
-    Produce a small matrix with good coverage of English and reasonable
-    coverage of the other 'core languages' in ConceptNet. A `prefix` can be
-    provided to limit the result to one language.
-    """
-    vocab1 = [term for term in frame.index if '_' not in term
-              and term.startswith(prefix) and term_freq(term) > 0.]
-    vocab_set = set(vocab1)
-    if other_vocab is not None:
-        extra_vocab = [term for term in other_vocab if '_' in term and
-                       term in frame.index and term not in vocab_set]
-        extra_vocab = extra_vocab[:20000]
-    else:
-        extra_vocab = []
-
-    vocab = vocab1 + extra_vocab
-    smaller = frame.loc[vocab]
-    U, _S, _Vt = np.linalg.svd(smaller, full_matrices=False)
-    redecomposed = l2_normalize_rows(pd.DataFrame(U[:, :k], index=vocab, dtype='f'))
-    mini = (redecomposed * 64).astype(np.int8)
-    mini.sort_index(inplace=True)
-    return mini
 
 
 def make_replacements(small_frame, big_frame, limit=100000):

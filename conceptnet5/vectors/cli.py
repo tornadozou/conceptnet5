@@ -1,13 +1,20 @@
 import click
 from .formats import (
-    convert_glove, convert_word2vec, convert_fasttext, load_hdf, save_hdf,
-    export_conceptnet_to_hyperwords, export_plain_text
+    convert_glove, convert_word2vec, convert_fasttext, convert_polyglot,
+    load_hdf, save_hdf, export_text
 )
 from .retrofit import sharded_retrofit, join_shards
 from .merge import merge_intersect
-from .evaluation.wordsim import evaluate, evaluate_raw
-from .transforms import miniaturize
+from .evaluation import wordsim, analogy, bias
+from .evaluation.compare import (
+    compare_embeddings, graph_comparison, graph_bias_comparison
+)
+from .miniaturize import miniaturize
+from .debias import de_bias_frame
 from .query import VectorSpaceWrapper
+
+
+ANALOGY_FILENAME = 'data/raw/analogy/SAT-package-V3.txt'
 
 
 @click.group()
@@ -62,8 +69,9 @@ def run_convert_glove(glove_filename, output_filename, nrows=500000):
 @click.argument('fasttext_filename', type=click.Path(readable=True, dir_okay=False))
 @click.argument('output_filename', type=click.Path(writable=True, dir_okay=False))
 @click.option('--nrows', '-n', default=500000)
-def run_convert_fasttext(fasttext_filename, output_filename, nrows=500000):
-    convert_fasttext(fasttext_filename, output_filename, nrows)
+@click.option('--language', '-l', default='en')
+def run_convert_fasttext(fasttext_filename, output_filename, nrows=500000, language='en'):
+    convert_fasttext(fasttext_filename, output_filename, nrows=nrows, language=language)
 
 
 @cli.command(name='convert_word2vec')
@@ -72,6 +80,14 @@ def run_convert_fasttext(fasttext_filename, output_filename, nrows=500000):
 @click.option('--nrows', '-n', default=500000)
 def run_convert_word2vec(word2vec_filename, output_filename, nrows=500000):
     convert_word2vec(word2vec_filename, output_filename, nrows)
+
+
+@cli.command(name='convert_polyglot')
+@click.argument('polyglot_filename', type=click.Path(readable=True, dir_okay=False))
+@click.argument('output_filename', type=click.Path(writable=True, dir_okay=False))
+@click.option('--language', '-l')
+def run_convert_polyglot(polyglot_filename, output_filename, language):
+    convert_polyglot(polyglot_filename, output_filename, language)
 
 
 @cli.command(name='intersect')
@@ -85,44 +101,115 @@ def run_intersect(input_filenames, output_filename, projection_filename):
     save_hdf(projection, projection_filename)
 
 
+@cli.command(name='debias')
+@click.argument('input_filename', type=click.Path(readable=True, dir_okay=False))
+@click.argument('output_filename', type=click.Path(writable=True, dir_okay=False))
+def run_debias(input_filename, output_filename):
+    frame = load_hdf(input_filename)
+    debiased = de_bias_frame(frame)
+    save_hdf(debiased, output_filename)
+
+
 @cli.command(name='evaluate')
 @click.argument('filename', type=click.Path(readable=True, dir_okay=False))
-def run_evaluate(filename):
+@click.option('--subset', '-s', type=click.Choice(['dev', 'test', 'all']), default='dev')
+@click.option('--semeval-by-language/--semeval-global', '-l', default=False)
+def run_evaluate(filename, subset, semeval_by_language):
     frame = load_hdf(filename)
-    print(evaluate(frame))
+    if semeval_by_language:
+        scope = 'per-language'
+    else:
+        scope = 'global'
+    print(wordsim.evaluate(frame, subset=subset, semeval_scope=scope))
+    print(analogy.evaluate(frame, subset=subset, analogy_filename=ANALOGY_FILENAME))
+    print(bias.measure_bias(frame))
+
+
+@cli.command(name='evaluate_wordsim')
+@click.argument('filename', type=click.Path(readable=True, dir_okay=False))
+@click.option('--subset', '-s', type=click.Choice(['dev', 'test', 'all']), default='dev')
+@click.option('--semeval-by-language/--semeval-global', '-l', default=False)
+def run_evaluate_wordsim(filename, subset, semeval_by_language):
+    frame = load_hdf(filename)
+    if semeval_by_language:
+        scope = 'per-language'
+    else:
+        scope = 'global'
+    print(wordsim.evaluate(frame, subset=subset, semeval_scope=scope))
 
 
 @cli.command(name='evaluate_raw')
 @click.argument('filename', type=click.Path(readable=True, dir_okay=False))
-def run_evaluate_raw(filename):
+@click.option('--subset', '-s', type=click.Choice(['dev', 'test', 'all']), default='dev')
+@click.option('--semeval-by-language/--semeval-global', '-l', default=False)
+def run_evaluate_raw(filename, subset, semeval_by_language):
     frame = load_hdf(filename)
-    print(evaluate_raw(frame))
+    if semeval_by_language:
+        scope = 'per-language'
+    else:
+        scope = 'global'
+    print(wordsim.evaluate_raw(frame, subset=subset, semeval_scope=scope))
 
 
-@cli.command(name='export_hyperwords')
-@click.argument('input_filename', type=click.Path(readable=True, dir_okay=False))
-@click.argument('output_matrix', type=click.Path(writable=True, dir_okay=False))
-@click.argument('output_vocab', type=click.Path(writable=True, dir_okay=False))
-@click.option('--nrows', '-n', default=200000)
-def run_export_hyperwords(input_filename, output_matrix, output_vocab, nrows=200000):
-    frame = load_hdf(input_filename)
-    export_conceptnet_to_hyperwords(frame, output_matrix, output_vocab, nrows=nrows)
+@cli.command(name='evaluate_analogies')
+@click.argument('filename', type=click.Path(readable=True, dir_okay=False))
+@click.option('--subset', '-s', type=click.Choice(['dev', 'test', 'all']), default='dev')
+def run_evaluate_analogies(filename, subset):
+    frame = load_hdf(filename)
+    print(analogy.evaluate(frame, analogy_filename=ANALOGY_FILENAME))
+
+
+@cli.command(name='evaluate_bias')
+@click.argument('filename', type=click.Path(readable=True, dir_okay=False))
+def run_evaluate_bias(filename):
+    frame = load_hdf(filename)
+    print(bias.measure_bias(frame))
+
+
+@cli.command(name='compare_embeddings')
+@click.argument('input_filenames', nargs=-1, type=click.Path(readable=True, dir_okay=False))
+@click.argument('output_filename', type=click.Path(writable=True, dir_okay=False))
+def run_compare_embeddings(input_filenames, output_filename):
+    """
+    The `input_filenames` are files that can be loaded as matrices of word
+    embeddings. They'll be run through the relatedness and analogy evaluations,
+    and the results will be saved in an HDF5 file, `output_filename`. This
+    file can be used by `comparison_graph`.
+
+    This requires the PostgreSQL database of ConceptNet 5 to be built, because
+    it finds embeddings of uncommon words on the fly by looking up their
+    neighbors in the ConceptNet graph. These embeddings could have been stored
+    in the matrix, but this saves memory and download time.
+    """
+    results = compare_embeddings(input_filenames, subset='all', tune_analogies=True)
+    print(results)
+    save_hdf(results, output_filename)
+
+
+@cli.command(name='comparison_graph')
+@click.argument('table_filename', type=click.Path(readable=True, dir_okay=False))
+@click.argument('eval_graph_filename', type=click.Path(writable=True, dir_okay=False))
+def run_comparison_graph(table_filename, eval_graph_filename):
+    """
+    Convert a table of evaluation results into a PNG or PDF graph.
+    """
+    graph_comparison(table_filename, eval_graph_filename)
 
 
 @cli.command(name='export_text')
 @click.argument('input_filename', type=click.Path(readable=True, dir_okay=False))
-@click.argument('uri_filename', type=click.Path(readable=True, dir_okay=False))
-@click.argument('output_dir', type=click.Path(writable=True, dir_okay=True, file_okay=False))
-def run_export(input_filename, uri_filename, output_dir):
+@click.argument('output_filename', type=click.Path(writable=True, dir_okay=False))
+@click.option('--language', '-l', default=None)
+def run_export(input_filename, output_filename, language):
     frame = load_hdf(input_filename)
-    export_plain_text(frame, uri_filename, output_dir)
+    export_text(frame, output_filename, language)
 
 
 @cli.command(name='miniaturize')
 @click.argument('input_filename', type=click.Path(readable=True, dir_okay=False))
 @click.argument('extra_vocab_filename', type=click.Path(readable=True, dir_okay=False))
 @click.argument('output_filename', type=click.Path(writable=True, dir_okay=False))
-@click.option('-k', default=256, help="Number of columns to reduce to")
+@click.option('-k', default=300, help="Number of columns to reduce to")
 def run_miniaturize(input_filename, extra_vocab_filename, output_filename, k):
     frame = load_hdf(input_filename)
     other_frame = load_hdf(extra_vocab_filename)

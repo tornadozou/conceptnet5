@@ -7,11 +7,6 @@ HTTP = HTTPRemoteProvider()
 # CONCEPTNET_BUILD_DATA environment variable. This will happen during testing.
 DATA = os.environ.get("CONCEPTNET_BUILD_DATA", "data")
 
-# If CONCEPTNET_BUILD_TEST is set, we're running the small test build.
-TESTMODE = bool(os.environ.get("CONCEPTNET_BUILD_TEST"))
-if TESTMODE:
-    os.environ['CONCEPTNET_DB_NAME'] = 'conceptnet-test'
-
 # Some build steps are difficult to run, so we've already run them and put
 # the results in S3. Of course, that can't be the complete solution, because
 # we have to have run those build steps first. So when USE_PRECOMPUTED is
@@ -70,7 +65,22 @@ PRECOMPUTED_DATA_PATH = "/precomputed-data/2016"
 PRECOMPUTED_DATA_URL = "http://conceptnet.s3.amazonaws.com" + PRECOMPUTED_DATA_PATH
 PRECOMPUTED_S3_UPLOAD = "s3://conceptnet" + PRECOMPUTED_DATA_PATH
 
-INPUT_EMBEDDINGS = ['glove12-840B', 'w2v-google-news']
+INPUT_EMBEDDINGS = [
+    'glove12-840B', 'w2v-google-news', 'fasttext-opensubtitles'
+]
+SOURCE_EMBEDDING_ROWS = 1500000
+
+# If CONCEPTNET_BUILD_TEST is set, we're running the small test build.
+TESTMODE = bool(os.environ.get("CONCEPTNET_BUILD_TEST"))
+if TESTMODE:
+    # Use a throwaway database to store the ConceptNet data when testing
+    os.environ['CONCEPTNET_DB_NAME'] = 'conceptnet-test'
+
+    # Retrofit a tiny version of GloVe when testing
+    INPUT_EMBEDDINGS = ['glove12-840B']
+    SOURCE_EMBEDDING_ROWS = 5000
+
+
 
 # Test mode overrides some of these settings.
 if TESTMODE:
@@ -91,12 +101,17 @@ rule all:
         DATA + "/psql/node_prefixes.csv.gz",
         DATA + "/psql/sources.csv.gz",
         DATA + "/psql/relations.csv.gz",
+        DATA + "/psql/done",
         DATA + "/stats/languages.txt",
+        DATA + "/stats/language_edges.txt",
         DATA + "/stats/relations.txt",
         DATA + "/assoc/reduced.csv",
         DATA + "/vectors/mini.h5",
-        DATA + "/vectors/plain/conceptnet-numberbatch_uris_main.txt.gz"
+        "data-loader/sha256sums.txt"
 
+rule evaluation:
+    input:
+        DATA + "/stats/eval-graph.png"
 
 rule webdata:
     input:
@@ -109,19 +124,18 @@ rule webdata:
         DATA + "/psql/relations.csv.gz",
         DATA + "/vectors/mini.h5",
 
-
 rule clean:
     shell:
         "for subdir in assertions collated db edges psql tmp vectors stats; "
         "do echo Removing %(data)s/$subdir; "
         "rm -rf %(data)s/$subdir; done" % {'data': DATA}
 
-
 rule test:
     input:
         DATA + "/assertions/assertions.csv",
         DATA + "/psql/done",
-        DATA + "/assoc/reduced.csv"
+        DATA + "/assoc/reduced.csv",
+        DATA + "/vectors/plain/numberbatch-en.txt.gz"
 
 
 # Downloaders
@@ -130,7 +144,25 @@ rule download_raw:
     output:
         DATA + "/raw/{dirname}/{filename}"
     shell:
-        "curl {RAW_DATA_URL}/{wildcards.dirname}/{wildcards.filename} > {output}"
+        "curl -f {RAW_DATA_URL}/{wildcards.dirname}/{wildcards.filename} > {output}"
+
+rule download_conceptnet_ppmi:
+    output:
+        DATA + "/precomputed/vectors/conceptnet-55-ppmi.h5"
+    shell:
+        "curl {PRECOMPUTED_DATA_URL}/numberbatch/16.09/conceptnet-55-ppmi.h5 > {output}"
+
+rule download_numberbatch:
+    output:
+        DATA + "/precomputed/vectors/numberbatch.h5"
+    shell:
+        "curl -f {PRECOMPUTED_DATA_URL}/numberbatch/16.09/numberbatch.h5 > {output}"
+
+rule download_opensubtitles_ppmi:
+    output:
+        DATA + "/precomputed/vectors/opensubtitles-ppmi-5.h5"
+    shell:
+        "curl -f {PRECOMPUTED_DATA_URL}/numberbatch/17.02/opensubtitles-ppmi-5.h5 > {output}"
 
 
 # Precomputation
@@ -156,7 +188,7 @@ rule precompute_wiktionary:
         DATA + "/precomputed/wiktionary/parsed-{version}/{language}.jsons.gz"
     run:
         if USE_PRECOMPUTED:
-            shell("curl {PRECOMPUTED_DATA_URL}/wiktionary/"
+            shell("curl -f {PRECOMPUTED_DATA_URL}/wiktionary/"
                   "parsed-{wildcards.version}/{wildcards.language}.jsons.gz "
                   "> {output}")
         else:
@@ -304,6 +336,7 @@ rule combine_assertions:
     shell:
         "python3 -m conceptnet5.builders.combine_assertions -o {output} {input}"
 
+
 # Putting data in PostgreSQL
 # ==========================
 rule prepare_db:
@@ -327,7 +360,6 @@ rule gzip_db:
         DATA + "/psql/{name}.csv.gz"
     shell:
         "gzip -c {input} > {output}"
-
 
 rule load_db:
     input:
@@ -355,7 +387,6 @@ rule relation_stats:
         "cut -f 2 {input} | LC_ALL=C sort | LC_ALL=C uniq -c "
         "| LC_ALL=C sort -nbr > {output}"
 
-
 rule all_terms:
     input:
         DATA + "/psql/nodes.csv"
@@ -363,7 +394,6 @@ rule all_terms:
         DATA + "/stats/terms.txt"
     shell:
         "cut -f 2 {input} > {output}"
-
 
 rule core_concepts_left:
     input:
@@ -407,6 +437,7 @@ rule concepts_right:
     shell:
         "cut -f 4 {input} > {output}"
 
+
 rule language_stats:
     input:
         DATA + "/stats/concepts_left.txt",
@@ -416,6 +447,17 @@ rule language_stats:
     shell:
         "cat {input} | grep '^/c/' | LC_ALL=C sort | LC_ALL=C uniq | cut -d '/' -f 3 "
         "| LC_ALL=C sort | LC_ALL=C uniq -c | sort -nbr > {output}"
+
+rule language_edge_stats:
+    input:
+        DATA + "/stats/concepts_left.txt",
+        DATA + "/stats/concepts_right.txt"
+    output:
+        DATA + "/stats/language_edges.txt"
+    shell:
+        "cat {input} | grep '^/c/' | LC_ALL=C sort | cut -d '/' -f 3 "
+        "| LC_ALL=C sort | LC_ALL=C uniq -c | sort -nbr > {output}"
+
 
 # Building associations
 # =====================
@@ -443,6 +485,7 @@ rule reduce_assoc:
     shell:
         "python3 -m conceptnet5.builders.reduce_assoc {input} {output}"
 
+
 # Building the vector space
 # =========================
 rule convert_word2vec:
@@ -453,7 +496,7 @@ rule convert_word2vec:
     resources:
         ram=16
     shell:
-        "CONCEPTNET_DATA=data cn5-vectors convert_word2vec -n 1500000 {input} {output}"
+        "CONCEPTNET_DATA=data cn5-vectors convert_word2vec -n {SOURCE_EMBEDDING_ROWS} {input} {output}"
 
 rule convert_glove:
     input:
@@ -463,18 +506,53 @@ rule convert_glove:
     resources:
         ram=16
     shell:
-        "CONCEPTNET_DATA=data cn5-vectors convert_glove -n 1500000 {input} {output}"
+        "CONCEPTNET_DATA=data cn5-vectors convert_glove -n {SOURCE_EMBEDDING_ROWS} {input} {output}"
 
-rule convert_lexvec:
+rule convert_fasttext:
     input:
-        DATA + "/raw/vectors/lexvec.no-header.vectors.gz",
-        DATA + "/db/wiktionary.db"
+        DATA + "/raw/vectors/fasttext-wiki-{lang}.vec.gz"
     output:
-        DATA + "/vectors/lexvec.h5"
+        DATA + "/vectors/fasttext-wiki-{lang}.h5"
     resources:
         ram=16
     shell:
-        "CONCEPTNET_DATA=data cn5-vectors convert_glove -n 1500000 {input} {output}"
+        "CONCEPTNET_DATA=data cn5-vectors convert_fasttext -n {SOURCE_EMBEDDING_ROWS} -l {wildcards.lang} {input} {output}"
+
+rule convert_lexvec:
+    input:
+        DATA + "/raw/vectors/lexvec.commoncrawl.300d.W+C.pos.vectors.gz",
+    output:
+        DATA + "/vectors/lexvec-commoncrawl.h5"
+    resources:
+        ram=16
+    shell:
+        "CONCEPTNET_DATA=data cn5-vectors convert_fasttext -n 2000000 {input} {output}"
+
+rule convert_opensubtitles_ft:
+    input:
+        DATA + "/raw/vectors/ft-opensubtitles.vec.gz",
+    output:
+        DATA + "/vectors/fasttext-opensubtitles.h5"
+    resources:
+        ram=16
+    shell:
+        "CONCEPTNET_DATA=data cn5-vectors convert_fasttext -n 2000000 {input} {output}"
+
+rule convert_polyglot:
+    input:
+        DATA + "/raw/vectors/polyglot-{language}.pkl"
+    output:
+        DATA + "/vectors/polyglot-{language}.h5"
+    shell:
+        "CONCEPTNET_DATA=data cn5-vectors convert_polyglot -l {wildcards.language} {input} {output}"
+
+rule import_opensubtitles_ppmi:
+    input:
+        DATA + "/precomputed/vectors/opensubtitles-ppmi-5.h5"
+    output:
+        DATA + "/vectors/opensubtitles-ppmi-5.h5"
+    shell:
+        "cp {input} {output}"
 
 rule retrofit:
     input:
@@ -501,17 +579,26 @@ rule merge_intersect:
     input:
         expand(DATA + "/vectors/{name}-retrofit.h5", name=INPUT_EMBEDDINGS)
     output:
-        DATA + "/vectors/numberbatch.h5",
+        DATA + "/vectors/numberbatch-biased.h5",
         DATA + "/vectors/intersection-projection.h5"
     resources:
         ram=16
     shell:
         "cn5-vectors intersect {input} {output}"
 
+rule debias:
+    input:
+        DATA + "/vectors/numberbatch-biased.h5"
+    output:
+        DATA + "/vectors/numberbatch.h5"
+    resources:
+        ram=16
+    shell:
+        "cn5-vectors debias {input} {output}"
 
 rule miniaturize:
     input:
-        DATA + "/vectors/numberbatch.h5",
+        DATA + "/vectors/numberbatch-biased.h5",
         DATA + "/vectors/w2v-google-news.h5"
     output:
         DATA + "/vectors/mini.h5"
@@ -520,13 +607,66 @@ rule miniaturize:
     shell:
         "cn5-vectors miniaturize {input} {output}"
 
-
 rule export_text:
     input:
         DATA + "/vectors/numberbatch.h5",
-        DATA + "/stats/terms.txt",
+    output:
+        DATA + "/vectors/plain/numberbatch.txt.gz"
+    shell:
+        "cn5-vectors export_text {input} {output}"
+
+
+rule export_english_text:
+    input:
+        DATA + "/vectors/numberbatch.h5",
+    output:
+        DATA + "/vectors/plain/numberbatch-en.txt.gz"
+    shell:
+        "cn5-vectors export_text -l en {input} {output}"
+
+
+rule sha256sums:
+    input:
+        DATA + "/psql/edge_features.csv.gz",
+        DATA + "/psql/edges.csv.gz",
+        DATA + "/psql/edge_sources.csv.gz",
+        DATA + "/psql/node_prefixes.csv.gz",
+        DATA + "/psql/nodes.csv.gz",
+        DATA + "/psql/relations.csv.gz",
+        DATA + "/psql/sources.csv.gz"
+    output:
+        "data-loader/sha256sums.txt"
+    shell:
+        "sha256sum {input} | sed -e 's:%(data)s:/data/conceptnet:' > {output}" % {'data': DATA}
+
+# Evaluation
+# ==========
+
+rule compare_embeddings:
+    input:
+        DATA + "/raw/vectors/GoogleNews-vectors-negative300.bin.gz",
+        DATA + "/raw/vectors/glove12.840B.300d.txt.gz",
+        DATA + "/vectors/glove12-840B.h5",
+        DATA + "/raw/vectors/fasttext-wiki-en.vec.gz",
+        DATA + "/vectors/numberbatch-biased.h5",
+        DATA + "/vectors/numberbatch.h5",
+        DATA + "/raw/analogy/SAT-package-V3.txt",
         DATA + "/psql/done"
     output:
-        DATA + "/vectors/plain/conceptnet-numberbatch_uris_main.txt.gz"
+        DATA + "/stats/evaluation.h5"
+    run:
+        input_embeddings = input[:-2]
+        input_embeddings_str = ' '.join(input_embeddings)
+        shell("cn5-vectors compare_embeddings %s {output}" % input_embeddings_str)
+
+rule comparison_graph:
+    input:
+        DATA + "/stats/evaluation.h5"
+    output:
+        DATA + "/stats/eval-graph.png"
     shell:
-        "cn5-vectors export_text %(data)s/vectors/numberbatch.h5 %(data)s/stats/terms.txt %(data)s/vectors/plain/conceptnet-numberbatch" % {'data': DATA}
+        "cn5-vectors comparison_graph {input} {output}"
+
+
+ruleorder:
+    join_retrofit > convert_polyglot
